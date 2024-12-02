@@ -62,6 +62,12 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct {
+	Command interface{}
+	Term    int
+	Index   int // todo? 如何知道每个log的上一个是什么？ 不用保存链表吗？
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -77,6 +83,14 @@ type Raft struct {
 	lastReceive time.Time
 	currentTerm int
 	voteFor     int
+
+	// 3B
+	log       []*LogEntry // 节点保存的logEntry列表
+	nextIndex []int       // 下标就是peer号，保存Leader应该给这个Follower发送的日志index
+	// 例如leader：1， follower：2， 当不匹配时， nextIndex[2] -= 1。 下一轮再取nextIndex[2]去校验是否一致
+	matchIndex  []int // 下标就说peer号，保存每个Follower和Leader匹配的日志index
+	commitIndex int
+	applyCh     chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -249,11 +263,15 @@ func (rf *Raft) SendHeartbeat(server int, args *RequestHeartBeatArgs) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	term, isLeader := rf.GetState()
 
-	// Your code here (3B).
+	index := len(rf.log)
+	if isLeader {
+		rf.log = append(rf.log, &LogEntry{Command: command, Term: term, Index: index + 1})
+		index = len(rf.log)
+		rf.nextIndex[rf.me] = index + 1
+		rf.matchIndex[rf.me] = index
+	}
 
 	return index, term, isLeader
 }
@@ -376,6 +394,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (3A, 3B, 3C).
 	rf.ConvertToFollower(0, -1)
 	DPrintf("[%d] initialized", rf.me)
+
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.log = make([]*LogEntry, 0)
+	rf.applyCh = applyCh
+	rf.commitIndex = 0
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
