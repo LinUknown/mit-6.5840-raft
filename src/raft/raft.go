@@ -163,8 +163,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
 
+	// 3A
 	CurrentTerm   int
 	CurrentServer int
+
+	// 3B
+	LastLogIndex int // leader最后一个log的index
+	LastLogTerm  int // leader最后一个log的term
 }
 
 // example RequestVote RPC reply structure.
@@ -176,40 +181,66 @@ type RequestVoteReply struct {
 
 type RequestHeartBeatArgs struct {
 	// Your data here (3A, 3B).
-
+	// 3A
 	CurrentTerm   int
 	CurrentServer int
+
+	// 3B
+	PrevLogIndex int         // 上一个logEntry的index
+	PrevLogTerm  int         // 上一个logEntry的term
+	Entries      []*LogEntry // 需要追加的日志数组
+	LeaderCommit int         //leader的commitId
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestHeartBeatReply struct {
 	// Your data here (3A).
+	result bool
+}
+
+func (rf *Raft) lastLogInfo() (int, int) {
+	// 查询当前最后一个log的index和term
+	lastEntry := rf.log[len(rf.log)-1]
+	return lastEntry.Index, lastEntry.Term
 }
 
 // example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (3A, 3B).
-	VoteGranted := false
-
-	// 无论如何，遇到比自己任期高的请求，都需要切换成它的follower
-	if rf.currentTerm < args.CurrentTerm {
-		// 如果打算投票，那么同时成为它的follower
-		// 加锁
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		rf.ConvertToFollower(args.CurrentTerm, args.CurrentServer)
-		VoteGranted = true
+func (rf *Raft) RequestVote(req *RequestVoteArgs, reply *RequestVoteReply) {
+	// 加锁
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// part A
+	if req.CurrentTerm < rf.currentTerm {
+		reply.VoteGranted = false
+		return
 	}
-	reply.VoteGranted = VoteGranted
+	if rf.voteFor > 0 && rf.voteFor != req.CurrentServer {
+		reply.VoteGranted = false
+		return
+	}
+	// part B
+	// 仅当Leader的日志index和term大于Follower，才投票
+	lastIndex, lastTerm := rf.lastLogInfo()
+	if lastIndex > req.LastLogIndex || lastTerm > req.LastLogTerm {
+		reply.VoteGranted = false
+		return
+	}
+	rf.ConvertToFollower(req.CurrentTerm, req.CurrentServer)
+	reply.VoteGranted = true
 }
 
 func (rf *Raft) Heartbeat(args *RequestHeartBeatArgs, reply *RequestHeartBeatReply) {
 	// 心跳的接收方，调用成为为follower
+	// partB：同步日志
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.voteFor == args.CurrentServer {
 		DPrintf("[%d] heart beat ==> %d, changeToTerm:%v", args.CurrentServer, rf.me, args.CurrentTerm)
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
+		if rf.currentTerm > args.CurrentTerm {
+			reply.result = false
+			return
+		}
 		rf.ConvertToFollower(args.CurrentTerm, args.CurrentServer)
 	}
 }
